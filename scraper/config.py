@@ -1,0 +1,1 @@
+BASE_URL = "https://www.ligaonepiece.com.br/"
