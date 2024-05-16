@@ -1,98 +1,112 @@
 import json
+import logging
 
 from datetime import datetime
 from urllib.parse import urljoin
 from .utils import fetch_page, parse_page
 from .config import BASE_URL
 
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 """Performs web scraping of the website"""
 def scrape_site():
-    collections = extract_collections(BASE_URL + "?view=cards/edicoes")
-
-    with open("collections_data.json", "w", encoding="utf-8") as f:
-        json.dump(collections, f, ensure_ascii=False, indent=4)
+    try:
+        collections = extract_collections(BASE_URL + "?view=cards/edicoes")
+        with open("collections_data.json", "w", encoding="utf-8") as f:
+            json.dump(collections, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Error scraping site: {e}")
 
 """Extracts and sorts information from each collection in the table"""
 def extract_collections(url):
-    html = fetch_page(url, "tab-edc")
-    soup = parse_page(html) 
-    table = soup.find('table', id='tab-edc')
-    collections = []
+    try:
+        html = fetch_page(url, "tab-edc")
+        soup = parse_page(html)
+        table = soup.find('table', id='tab-edc')
+        collections = []
 
-    for row in table.find('tbody').find_all('tr'):
-        cells = row.find_all('td')
-        edition_name = cells[0].find('a').text
-        edition_link = urljoin(BASE_URL, cells[0].find('a')['href']).replace(" ", "%20")
-        acronym = cells[1].text
-        release_date = datetime.strptime(cells[2].text, "%d/%m/%Y")
+        for row in table.find('tbody').find_all('tr'):
+            cells = row.find_all('td')
+            edition_name = cells[0].find('a').text
+            edition_link = urljoin(BASE_URL, cells[0].find('a')['href']).replace(" ", "%20")
+            acronym = cells[1].text
+            release_date = datetime.strptime(cells[2].text, "%d/%m/%Y")
 
-        collections.append({
-            'Name': edition_name,
-            'Link': edition_link,
-            'Acronym': acronym,
-            'Release Date': release_date
-        })
-        
-    collections = sorted(collections, key=lambda x: (x['Release Date'], x['Acronym']))
+            collections.append({
+                'Name': edition_name,
+                'Link': edition_link,
+                'Acronym': acronym,
+                'Release Date': release_date
+            })
 
-    collections_data = []
-    for collection in collections:
-        cards = extract_cards(collection)
-        
-        collection_data = {
-            'Name': collection['Name'],
-            'Acronym': collection['Acronym'],
-            'Release Date': collection['Release Date'].strftime("%d/%m/%Y"),
-            'Link': collection['Link'],
-            'Cards': cards
-        }
-        
-        collections_data.append(collection_data)
+        collections = sorted(collections, key=lambda x: (x['Release Date'], x['Acronym']))
 
-    return collections_data
+        collections_data = []
+        for collection in collections:
+            cards = extract_cards(collection)
+
+            collection_data = {
+                'Name': collection['Name'],
+                'Acronym': collection['Acronym'],
+                'Release Date': collection['Release Date'].strftime("%d/%m/%Y"),
+                'Link': collection['Link'],
+                'Cards': cards
+            }
+
+            collections_data.append(collection_data)
+
+        return collections_data
+    except Exception as e:
+        logger.error(f"Error extracting collections: {e}")
+        return []
 
 
 """Extract information about the cards."""
 def extract_cards(collection):
-    url = collection['Link']
-    print(f"Scraping collection: {url}")
-    html = fetch_page(url, "card-estoque")
-    soup = parse_page(html)
+    try:
+        url = collection['Link']
+        logger.info(f"Scraping collection: {url}")
+        html = fetch_page(url, "card-estoque")
+        soup = parse_page(html)
 
-    cards = []
-    card_container = soup.find("div", class_="grid-cardsinput")
-    if not card_container:
-        print(f"Unable to find 'grid-cardsinput' in collection: {collection['Name']}")
+        cards = []
+        card_container = soup.find("div", class_="grid-cardsinput")
+        if not card_container:
+            logger.warning(f"Unable to find 'grid-cardsinput' in collection: {collection['Name']}")
+            return []
+
+        for card in card_container.find_all("div", class_="card-item"):
+            card_info = {}
+            card_name = card.find("span", class_="invisible-label").b.text
+            prices = card.find("div", class_="card-prices")
+            if prices:
+                low_price = prices.find("div", class_="avgp-minprc").text
+                high_price = prices.find("div", class_="avgp-maxprc").text
+            else:
+                low_price = high_price = "N/A"
+
+            marketplace_link = urljoin(BASE_URL, card.find("a")['href'])
+            card_image = None
+            image_element = card.find("img", class_="main-card")
+            if image_element:
+                card_image = image_element.get('src') or image_element.get('data-src', "N/A")
+
+            card_info = {
+                'Name': card_name,
+                'Lowest Price': low_price,
+                'Highest Price': high_price,
+                'Link Marketplace': marketplace_link,
+                'Image': card_image
+            }
+
+            cards.append(card_info)
+
+        return cards
+    except Exception as e:
+        logger.error(f"Error extracting cards: {e}")
         return []
-
-    for card in card_container.find_all("div", class_="card-item"):
-        card_info = {}
-        card_name = card.find("span", class_="invisible-label").b.text
-        prices = card.find("div", class_="card-prices")
-        if prices:
-            low_price = prices.find("div", class_="avgp-minprc").text
-            high_price = prices.find("div", class_="avgp-maxprc").text
-        else:
-            low_price = high_price = "N/A"
-
-        marketplace_link = urljoin(BASE_URL, card.find("a")['href'])
-        card_image = None
-        image_element = card.find("img", class_="main-card")
-        if image_element:
-            card_image = image_element.get('src') or image_element.get('data-src', "N/A")
-
-        card_info = {
-            'Name': card_name,
-            'Lowest Price': low_price,
-            'Highest Price': high_price,
-            'Link Marketplace': marketplace_link,
-            'Image': card_image
-        }
-
-        cards.append(card_info)
-
-    return cards
 
 
 """Displays information for each collection"""
