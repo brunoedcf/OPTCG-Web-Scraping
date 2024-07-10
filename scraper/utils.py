@@ -1,5 +1,6 @@
 import time
 import logging
+import re
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -13,6 +14,8 @@ from selenium.webdriver.remote.remote_connection import LOGGER as selenium_logge
 selenium_logger.setLevel(logging.WARNING)
 
 """Download the HTML of a web page using Selenium"""
+
+
 def fetch_page(url, element_id):
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -27,8 +30,22 @@ def fetch_page(url, element_id):
 
     try:
         driver.get(url)
-        time.sleep(2)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, element_id)))
+        time.sleep(0.25)
+        # Scroll to the bottom to load all card elements
+        last_height = driver.execute_script("return document.body.scrollHeight")
+
+        while True:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(0.25)
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+        # Make sure the target element is rendered
+        WebDriverWait(driver, 0.25).until(
+            EC.presence_of_element_located((By.ID, element_id))
+        )
         html = driver.page_source
 
     finally:
@@ -38,5 +55,13 @@ def fetch_page(url, element_id):
 
 
 """Parses the HTML and returns a BeautifulSoup object"""
+
+
 def parse_page(html):
-    return BeautifulSoup(html, 'html.parser')
+    return BeautifulSoup(html, "html.parser")
+
+
+def convert_price(price):
+    price = re.sub(r"\D", "", price)
+    price = price[:-2] + "." + price[-2:]
+    return float(price)

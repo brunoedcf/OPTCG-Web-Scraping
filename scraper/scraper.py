@@ -1,61 +1,138 @@
 import json
 import logging
+import re
+import requests
+import time
+import os
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urljoin
-from .utils import fetch_page, parse_page
-from .config import BASE_URL
+from .utils import fetch_page, parse_page, convert_price
+from dotenv import dotenv_values
+
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+
+try:
+    config = dotenv_values(env_path)
+    MONGO_API = config["MONGO_API"]
+    BASE_URL = config["BASE_URL"]
+except KeyError as e:
+    raise KeyError(f"Missing expected environment variable: {e}")
+
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-"""Performs web scraping of the website"""
+"""Starts the web scraping"""
+
+
 def scrape_site():
+    start_time = time.time()
     try:
         collections = extract_collections(BASE_URL + "?view=cards/edicoes")
-        with open("collections_data.json", "w", encoding="utf-8") as f:
+        with open("onepiecetgc_collections_data.json", "w", encoding="utf-8") as f:
             json.dump(collections, f, ensure_ascii=False, indent=4)
+
     except Exception as e:
         logger.error(f"Error scraping site: {e}")
 
-"""Extracts and sorts information from each collection in the table"""
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    logger.info(f"Total execution time: {elapsed_time:.2f} seconds")
+
+
+"""Extracts information from each collection in the table"""
+
+
+def process_collection(row):
+    cells = row.find_all("td")
+    edition_name = cells[0].find("a").text
+    edition_link = urljoin(BASE_URL, cells[0].find("a")["href"]).replace(" ", "%20")
+    acronym = cells[1].text
+    release_date = datetime.strptime(cells[2].text, "%d/%m/%Y")
+
+    collection_data = {
+        "name": edition_name,
+        "link": edition_link,
+        "acronym": acronym,
+        "release_date": release_date.isoformat(),
+    }
+
+    # Check if the collection already exists
+    response = requests.get(f"{MONGO_API}/collections/{acronym}")
+    if response.status_code == 200:
+        # Collection exists, update it
+        update_response = requests.put(
+            f"{MONGO_API}/collections/{acronym}", json=collection_data
+        )
+        if update_response.status_code == 200:
+            logger.info(f"Updated collection: {acronym}")
+            collection_data["collection_id"] = update_response.json()["_id"]
+        else:
+            logger.error(
+                f"Failed to update collection: {acronym}, Status Code: {update_response.status_code}"
+            )
+    else:
+        # Collection does not exist, create it
+        create_response = requests.post(
+            f"{MONGO_API}/collections", json=collection_data
+        )
+        if create_response.status_code == 201:
+            logger.info(f"Created collection: {acronym}")
+            collection_data["collection_id"] = create_response.json()["_id"]
+        else:
+            logger.error(
+                f"Failed to create collection: {acronym}, Status Code: {create_response.status_code}"
+            )
+
+    return collection_data
+
+
 def extract_collections(url):
     try:
         html = fetch_page(url, "tab-edc")
         soup = parse_page(html)
-        table = soup.find('table', id='tab-edc')
+        table = soup.find("table", id="tab-edc")
         collections = []
 
-        for row in table.find('tbody').find_all('tr'):
-            cells = row.find_all('td')
-            edition_name = cells[0].find('a').text
-            edition_link = urljoin(BASE_URL, cells[0].find('a')['href']).replace(" ", "%20")
-            acronym = cells[1].text
-            release_date = datetime.strptime(cells[2].text, "%d/%m/%Y")
+        rows = table.find("tbody").find_all("tr")
 
-            collections.append({
-                'Name': edition_name,
-                'Link': edition_link,
-                'Acronym': acronym,
-                'Release Date': release_date
-            })
-
-        collections = sorted(collections, key=lambda x: (x['Release Date'], x['Acronym']))
+        # Use ThreadPoolExecutor to parallelize collection processing
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(process_collection, row) for row in rows]
+            for future in as_completed(futures):
+                try:
+                    collection_data = future.result()
+                    collections.append(collection_data)
+                except Exception as e:
+                    logger.error(f"Error processing collection: {e}")
 
         collections_data = []
-        for collection in collections:
-            cards = extract_cards(collection)
 
-            collection_data = {
-                'Name': collection['Name'],
-                'Acronym': collection['Acronym'],
-                'Release Date': collection['Release Date'].strftime("%d/%m/%Y"),
-                'Link': collection['Link'],
-                'Cards': cards
+        # Use ThreadPoolExecutor to parallelize card scraping
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(extract_cards, collection): collection
+                for collection in collections
             }
-
-            collections_data.append(collection_data)
+            for future in as_completed(futures):
+                collection = futures[future]
+                try:
+                    cards = future.result()
+                    collection_data = {
+                        "name": collection["name"],
+                        "acronym": collection["acronym"],
+                        "release_date": collection["release_date"],
+                        "link": collection["link"],
+                        "cards": cards,
+                    }
+                    collections_data.append(collection_data)
+                except Exception as e:
+                    logger.error(
+                        f"Error extracting cards from {collection['name']}: {e}"
+                    )
 
         return collections_data
     except Exception as e:
@@ -64,17 +141,24 @@ def extract_collections(url):
 
 
 """Extract information about the cards."""
+
+
 def extract_cards(collection):
     try:
-        url = collection['Link']
-        logger.info(f"Scraping collection: {url}")
+        url = collection["link"]
+        logger.info(f"Scraping collection: {collection['acronym']}")
+
+        # Wait for card-estoque element to render and parse the page
         html = fetch_page(url, "card-estoque")
         soup = parse_page(html)
 
         cards = []
         card_container = soup.find("div", class_="grid-cardsinput")
+
         if not card_container:
-            logger.warning(f"Unable to find 'grid-cardsinput' in collection: {collection['Name']}")
+            logger.warning(
+                f"Unable to find 'grid-cardsinput' in collection: {collection['acronym']}"
+            )
             return []
 
         for card in card_container.find_all("div", class_="card-item"):
@@ -87,51 +171,58 @@ def extract_cards(collection):
             else:
                 low_price = high_price = "N/A"
 
-            marketplace_link = urljoin(BASE_URL, card.find("a")['href'])
+            marketplace_link = urljoin(BASE_URL, card.find("a")["href"])
             card_image = None
             image_element = card.find("img", class_="main-card")
             if image_element:
-                card_image = image_element.get('src') or image_element.get('data-src', "N/A")
+                card_image = image_element.get("src") or image_element.get(
+                    "data-src", "N/A"
+                )
+
+            match = re.search(r".*\(([^()]*)\)[^(]*$", card_name)
+            if match:
+                collection_number = match.group(1)
+            else:
+                collection_number = card_name
 
             card_info = {
-                'Name': card_name,
-                'Lowest Price': low_price,
-                'Highest Price': high_price,
-                'Link Marketplace': marketplace_link,
-                'Image': card_image
+                "collection_id": collection["collection_id"],
+                "number": collection_number,
+                "collection_number": collection["acronym"] + ": " + collection_number,
+                "name": card_name,
+                "lowest_price": convert_price(low_price),
+                "highest_price": convert_price(high_price),
+                "link_marketplace": marketplace_link,
+                "image": card_image,
             }
+
+            # Check if the card already exists
+            response = requests.get(f"{MONGO_API}/cards/{collection_number}")
+            if response.status_code == 200:
+                # Card exists, update it
+                update_response = requests.put(
+                    f"{MONGO_API}/cards/{collection_number}", json=card_info
+                )
+                if update_response.status_code == 200:
+                    logger.info(f"Updated card: {collection_number}")
+                else:
+                    logger.error(
+                        f"Failed to update card: {collection_number}, Status Code: {update_response.status_code}"
+                    )
+            else:
+                # Collection does not exist, create it
+                create_response = requests.post(f"{MONGO_API}/cards", json=card_info)
+                if create_response.status_code == 201:
+                    logger.info(f"Created card: {collection_number}")
+                else:
+                    logger.error(
+                        f"Failed to create card: {collection_number}, Status Code: {create_response.status_code}"
+                    )
 
             cards.append(card_info)
 
         return cards
+
     except Exception as e:
-        logger.error(f"Error extracting cards: {e}")
+        logger.error(f"Error extracting cards from {collection['name']}: {e}")
         return []
-
-
-"""Displays information for each collection"""
-def display_collections(collections):
-    
-    for collection in collections:
-        print(f"Name: {collection['Name']}")
-        print(f"Link: {collection['Link']}")
-        print(f"Acronym: {collection['Acronym']}")
-        print(f"Release Date: {collection['Release Date']}")
-        print("-" * 50)
-
-
-"""Displays cards from a specific collection"""
-def display_collection_cards(collection, cards):
-    
-    print(f"Coleção: {collection['Name']}")
-    print(f"Acronym: {collection['Acronym']}")
-    print(f"Release Date: {collection['Release Date']}")
-    print(f"Cards:")
-
-    for card in cards:
-        print(f"  - Name: {card['Name']}")
-        print(f"    Lowest Price: {card['Lowest Price']}")
-        print(f"    Highest Price: {card['Highest Price']}")
-        print(f"    Image: {card['Image']}")
-        print(f"    Link Marketplace: {card['Link Marketplace']}")
-        print("")

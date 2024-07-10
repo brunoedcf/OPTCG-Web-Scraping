@@ -96,3 +96,6 @@ env.bak/
 
 # project
 collections_data.json
+
+# environment variables
+.env
