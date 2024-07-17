@@ -8,6 +8,9 @@ while ($true) {
         .\venv\Scripts\Activate.ps1
         Write-Output "Virtual environment activated."
 
+        python.exe -m pip install --upgrade pip
+        Write-Output "Pip upgraded."
+
         pip install -r requirements.txt
         Write-Output "Dependencies installed."
     }
