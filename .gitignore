@@ -94,8 +94,5 @@ env.bak/
 # mypy
 .mypy_cache/
 
-# project
-collections_data.json
-
 # environment variables
 .env
