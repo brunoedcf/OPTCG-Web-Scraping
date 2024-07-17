@@ -30,23 +30,28 @@ def fetch_page(url, element_id):
 
     try:
         driver.get(url)
-        time.sleep(0.25)
+        time.sleep(2)
         # Scroll to the bottom to load all card elements
         last_height = driver.execute_script("return document.body.scrollHeight")
 
         while True:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.25)
+            time.sleep(2)
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height:
                 break
             last_height = new_height
 
         # Make sure the target element is rendered
-        WebDriverWait(driver, 0.25).until(
+        WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.ID, element_id))
         )
         html = driver.page_source
+
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        driver.quit()
+        raise e
 
     finally:
         driver.quit()
