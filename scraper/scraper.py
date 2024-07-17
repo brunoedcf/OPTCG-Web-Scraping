@@ -3,12 +3,18 @@ import re
 import requests
 import time
 import os
+import pytz
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urljoin
 from .utils import fetch_page, parse_page, convert_price
 from dotenv import dotenv_values
+
+
+def get_current_time():
+    return datetime.now(pytz.timezone("America/Sao_Paulo")).isoformat()
+
 
 env_path = os.path.join(os.path.dirname(__file__), "../.env")
 
@@ -19,12 +25,9 @@ try:
 except KeyError as e:
     raise KeyError(f"Missing expected environment variable: {e}")
 
-
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-"""Starts the web scraping"""
 
 
 def scrape_site():
@@ -34,13 +37,10 @@ def scrape_site():
 
     except Exception as e:
         logger.error(f"Error scraping site: {e}")
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    logger.info(f"Total execution time: {elapsed_time:.2f} seconds")
-
-
-"""Extracts information from each collection in the table"""
+    finally:
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.info(f"Total execution time: {elapsed_time:.2f} seconds")
 
 
 def process_collection(row):
@@ -97,7 +97,7 @@ def extract_collections(url):
         rows = table.find("tbody").find_all("tr")
 
         # Use ThreadPoolExecutor to parallelize collection processing
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             futures = [executor.submit(process_collection, row) for row in rows]
             for future in as_completed(futures):
                 try:
@@ -109,7 +109,7 @@ def extract_collections(url):
         collections_data = []
 
         # Use ThreadPoolExecutor to parallelize card scraping
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             futures = {
                 executor.submit(extract_cards, collection): collection
                 for collection in collections
@@ -135,9 +135,6 @@ def extract_collections(url):
     except Exception as e:
         logger.error(f"Error extracting collections: {e}")
         return []
-
-
-"""Extract information about the cards."""
 
 
 def extract_cards(collection):
@@ -182,38 +179,41 @@ def extract_cards(collection):
             else:
                 collection_number = card_name
 
+            label_collection_number = collection["acronym"] + ": " + collection_number
+
             card_info = {
                 "collection_id": collection["collection_id"],
                 "number": collection_number,
-                "collection_number": collection["acronym"] + ": " + collection_number,
+                "collection_number": label_collection_number,
                 "name": card_name,
                 "lowest_price": convert_price(low_price),
                 "highest_price": convert_price(high_price),
                 "link_marketplace": marketplace_link,
                 "image": card_image,
+                "last_updated": get_current_time(),
             }
 
             # Check if the card already exists
-            response = requests.get(f"{MONGO_API}/cards/{collection_number}")
+            response = requests.get(f"{MONGO_API}/cards/{label_collection_number}")
             if response.status_code == 200:
                 # Card exists, update it
                 update_response = requests.put(
-                    f"{MONGO_API}/cards/{collection_number}", json=card_info
+                    f"{MONGO_API}/cards/{label_collection_number}", json=card_info
                 )
                 if update_response.status_code == 200:
-                    logger.info(f"Updated card: {collection_number}")
+                    logger.info(f"Updated card: {label_collection_number}")
                 else:
                     logger.error(
-                        f"Failed to update card: {collection_number}, Status Code: {update_response.status_code}"
+                        f"Failed to update card: {label_collection_number}, Status Code: {update_response.status_code}"
                     )
             else:
-                # Collection does not exist, create it
+                # Card does not exist, create it
                 create_response = requests.post(f"{MONGO_API}/cards", json=card_info)
                 if create_response.status_code == 201:
-                    logger.info(f"Created card: {collection_number}")
+                    logger.info(f"Created card: {label_collection_number}")
                 else:
                     logger.error(
-                        f"Failed to create card: {collection_number}, Status Code: {create_response.status_code}"
+                        f"Failed to create card: {label_collection_number}, Status Code: {create_response.status_code}"
                     )
 
             cards.append(card_info)
@@ -223,3 +223,7 @@ def extract_cards(collection):
     except Exception as e:
         logger.error(f"Error extracting cards from {collection['name']}: {e}")
         return []
+
+
+if __name__ == "__main__":
+    scrape_site()
