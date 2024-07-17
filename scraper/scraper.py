@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import requests
@@ -11,7 +10,7 @@ from urllib.parse import urljoin
 from .utils import fetch_page, parse_page, convert_price
 from dotenv import dotenv_values
 
-env_path = os.path.join(os.path.dirname(__file__), ".env")
+env_path = os.path.join(os.path.dirname(__file__), "../.env")
 
 try:
     config = dotenv_values(env_path)
@@ -32,8 +31,6 @@ def scrape_site():
     start_time = time.time()
     try:
         collections = extract_collections(BASE_URL + "?view=cards/edicoes")
-        with open("onepiecetgc_collections_data.json", "w", encoding="utf-8") as f:
-            json.dump(collections, f, ensure_ascii=False, indent=4)
 
     except Exception as e:
         logger.error(f"Error scraping site: {e}")
